@@ -77,8 +77,8 @@ class CFG:
     device='GPU' # ['TPU', 'GPU']
     nprocs = 1 # [1, 8]
     print_freq=100
-    num_workers = 1
-    model_name= 'resnext50_32x4d'#'resnet200d_320' # 
+    num_workers = 0
+    model_name= 'resnet200d_320'#'resnet200d_320' # 
     size = 640
     scheduler='ReduceLROnPlateau' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
     epochs = 20
@@ -89,7 +89,7 @@ class CFG:
     T_0 = 4 # CosineAnnealingWarmRestarts
     lr= 5e-4 # 1e-4, 5e-4 para step 2
     min_lr= 1e-6
-    batch_size= 8 # 24
+    batch_size= 16 # 24
     weight_decay=1e-6
     gradient_accumulation_steps=1
     max_grad_norm=1000
@@ -100,7 +100,7 @@ class CFG:
                  'CVC - Abnormal', 'CVC - Borderline', 'CVC - Normal',
                  'Swan Ganz Catheter Present']
     n_fold=5
-    trn_fold=[2] # [0, 1, 2, 3, 4]. 
+    trn_fold=[0] # [0, 1, 2, 3, 4]. 
     train=True
     USE_TEST_FOLD = True
     CURRENT_FOLD = 0
@@ -140,6 +140,9 @@ if CFG.STEP == 3:
     
 if CFG.DO_SERESNET152D:
     CFG.model_name = 'seresnet152d_320'
+    
+print('Size is', CFG.size)
+print('Batch Size is', CFG.batch_size)
 
 
 # In[7]:
@@ -534,9 +537,9 @@ class CustomResNet200D(nn.Module):
         super().__init__()
         self.model = timm.create_model(model_name, pretrained=True)
         if pretrained and model_name == 'resnet200d_320':
-            self.model = timm.create_model(model_name, pretrained=False)
-            pretrained_path = '../input/resnet200d-pretrained-weight/resnet200d_ra2-bdba9bf9.pth'
-            self.model.load_state_dict(torch.load(pretrained_path))
+            self.model = timm.create_model(model_name, pretrained=True)
+            #pretrained_path = '../input/resnet200d-pretrained-weight/resnet200d_ra2-bdba9bf9.pth'
+            #self.model.load_state_dict(torch.load(pretrained_path))
             print(f'load {model_name} pretrained model')
         else:
             self.model = timm.create_model(model_name, pretrained=True)
