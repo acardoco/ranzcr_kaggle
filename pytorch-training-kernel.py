@@ -81,7 +81,7 @@ class CFG:
     model_name= 'resnet200d_320'#'resnet200d_320' # 
     size = 640
     scheduler='ReduceLROnPlateau' # ['ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts']
-    epochs = 20
+    epochs = 10
     factor=0.1 # ReduceLROnPlateau. 0.2
     patience=0 # ReduceLROnPlateau. 4
     eps=1e-6 # ReduceLROnPlateau
@@ -89,7 +89,7 @@ class CFG:
     T_0 = 4 # CosineAnnealingWarmRestarts
     lr= 5e-4 # 1e-4, 5e-4 para step 2
     min_lr= 1e-6
-    batch_size= 16 # 24
+    batch_size= 8 # 24
     weight_decay=1e-6
     gradient_accumulation_steps=1
     max_grad_norm=1000
@@ -115,8 +115,8 @@ class CFG:
     MORE_LAYERS_MODEL = False
     student_more_layers = '../input/resnet200dstudentsstep2/'
     # TODO para continuar entrenando
-    CONTINUE_TRAINING = False
-    continue_path = '../input/resnet200dstep3morelayersphase1/'
+    CONTINUE_TRAINING = True
+    continue_path = os.getcwd() + '/outputs/resnet200d_320_fold0_step0_best_loss_640_12epochs_Mlayers.pth'
     lr_continue = 5e-5 # CAMBIAR A MANO
     # OTROS TIPOS DE MODELOS
     DO_EFFICIENT = False
@@ -129,8 +129,10 @@ if CFG.debug:
     CFG.epochs = 1
     
 if CFG.CONTINUE_TRAINING:
-    CFG.epochs = 14
+    CFG.epochs = 12
     CFG.lr = CFG.lr_continue
+    CFG.eps = 5e-9
+    CFG.weight_decay = 1e-7
     
 if CFG.MORE_LAYERS_MODEL:
     CFG.student = CFG.student_more_layers
@@ -535,16 +537,18 @@ for i in range(5):
 class CustomResNet200D(nn.Module):
     def __init__(self, model_name='resnet200d_320', pretrained=False):
         super().__init__()
+        
+        # elegir modelo pre-entrenado
         self.model = timm.create_model(model_name, pretrained=True)
-        if pretrained and model_name == 'resnet200d_320':
-            self.model = timm.create_model(model_name, pretrained=True)
-            #pretrained_path = '../input/resnet200d-pretrained-weight/resnet200d_ra2-bdba9bf9.pth'
-            #self.model.load_state_dict(torch.load(pretrained_path))
-            print(f'load {model_name} pretrained model')
-        else:
-            self.model = timm.create_model(model_name, pretrained=True)
-            print(f'load {model_name} pretrained model from timm')
-        n_features = self.model.fc.in_features # son 2048
+        print(f'loaded {model_name} pretrained model')
+            
+        # capas
+        if model_name == 'regnety_080':
+            n_features = self.model.head.fc.in_features
+        else: 
+            n_features = self.model.fc.in_features # son 2048
+            
+        # resto de capas
         self.model.global_pool = nn.Identity()
         self.model.fc = nn.Identity()
         self.pooling = nn.AdaptiveAvgPool2d(1)
@@ -555,7 +559,7 @@ class CustomResNet200D(nn.Module):
             self.fc = nn.Linear(512, CFG.target_size)
         else:
             self.fc = nn.Linear(n_features, CFG.target_size)
-
+            
     def forward(self, x):
         bs = x.size(0)
         features = self.model(x)
@@ -1003,15 +1007,14 @@ def train_loop(fold):
         return scheduler
 
     # ====================================================
-    # model & optimizer
+    # 3 model & optimizer
     # ====================================================
     if CFG.device == 'TPU':
         device = xm.xla_device()
     elif CFG.device == 'GPU':
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        
-    print('Preparing models ...')
-    # Leemos el modelo del STEP 1 
+       
+    # 3.1 Leemos el modelo del STEP 1 
     if CFG.STEP == 2:
         teacher_model = CustomResNet200D(CFG.model_name, pretrained=False)
         teacher_model_path = CFG.teacher + "resnet200d_320_fold" + str(fold) + "_step1_best_loss_cpu.pth"
@@ -1021,26 +1024,40 @@ def train_loop(fold):
         teacher_model.eval()
         teacher_model.to(device)
         
-    # Elegimos el tipo de modelo a entrenar
+    # 3.2 Elegimos el tipo de modelo a entrenar
     if CFG.DO_EFFICIENT:
         model = CustomEfficientB7(CFG.model_name, pretrained=True)
     else:
         model = CustomResNet200D(CFG.model_name, pretrained=True)
         
-    # Leemos estudiante si STEP es 3
+    # 3.3 Leemos estudiante si STEP es 3
     if CFG.STEP == 3 and CFG.CONTINUE_TRAINING == False:
         student_model_path = CFG.student + "resnet200d_320_fold" + str(fold) + "_step2_best_loss.pth"
         model.load_state_dict(torch.load(student_model_path, map_location=torch.device('cpu'))['model'])
         
-    # Continuacion de entrenamiento
+    # 3.4 Continuar entrenamiento de un modelo con steps
     if CFG.STEP == 3 and CFG.CONTINUE_TRAINING:
         continue_model_path = CFG.continue_path + "resnet200d_320_fold" + str(fold) + "_step3_best_loss_cpu.pth"
         model.load_state_dict(torch.load(continue_model_path, map_location=torch.device('cpu'))['model'])
         
+    # 3.5 Continuar entrenamiento de un modelo sin steps
+    if CFG.STEP == 0 and CFG.CONTINUE_TRAINING:
+        print('Importing last checkpoint model ...')
+        model.load_state_dict(torch.load(CFG.continue_path, map_location=torch.device('cpu'))['model'])
+            
     model.to(device)
 
     optimizer = Adam(model.parameters(), lr=CFG.lr, weight_decay=CFG.weight_decay, amsgrad=False)
     scheduler = get_scheduler(optimizer)
+    
+    # Cargo anterior scheduler en caso de continuar entrenando
+    if CFG.STEP == 0 and CFG.CONTINUE_TRAINING:
+        print('Importing last checkpoint parameters ...')
+        checkpoint = torch.load(CFG.continue_path)
+#         optimizer.load_state_dict(checkpoint['optimizer'])
+#         scheduler.load_state_dict(checkpoint['scheduler'])
+#         scheduler = get_scheduler(optimizer)
+        print('Done.')
     
 #     warmup_epo = 1 #++
 #     scheduler_warmup = GradualWarmupSchedulerV2(optimizer, multiplier=10, total_epoch=warmup_epo, after_scheduler = scheduler) #++
